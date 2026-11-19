@@ -1,0 +1,55 @@
+name: Kick Stream Recorder
+
+on:
+  schedule:
+    # Проверка каждые 15 минут (по UTC)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Кнопка для ручного запуска в любое время
+
+# Защита от дублей: не запускать вторую запись, пока идет первая
+concurrency:
+  group: kick-uebmarginal-recorder
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Установка Streamlink и Rclone
+        run: |
+          python3 -m pip install --upgrade streamlink
+          sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+
+      - name: Настройка Rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          cat << 'EOF' > ~/.config/rclone/rclone.conf
+          ${{ secrets.RCLONE_CONF }}
+          EOF
+
+      - name: Проверка эфира и запись (480p)
+        run: |
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          FILENAME="kick_uebmarginal_${TIMESTAMP}.ts"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+
+          # Запись максимум 5 часов 20 минут (19200 сек), чтобы осталось время на загрузку
+          timeout 19200 streamlink \
+            --output "$FILENAME" \
+            --hls-live-restart \
+            --retry-streams 5 \
+            --retry-max 3 \
+            "https://kick.com/uebmarginal" "480p,480p30,480p60,worst" || true
+
+      - name: Загрузка на Google Диск
+        if: always()
+        run: |
+          if [ -f "$FILENAME" ] && [ $(stat -c%s "$FILENAME") -gt 1048576 ]; then
+            echo "Загружаю $FILENAME на Google Диск..."
+            rclone copy "$FILENAME" gdrive:KickRecordings --drive-chunk-size=64M -v
+            echo "Загрузка завершена!"
+          else
+            echo "Стрим оффлайн или файл меньше 1 МБ — загружать нечего."
+          fi
