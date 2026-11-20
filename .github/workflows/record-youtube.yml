@@ -1,0 +1,56 @@
+name: YouTube Stream Recorder (Xikkasgrandma)
+
+on:
+  schedule:
+    # Проверка каждые 15 минут (по UTC)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Кнопка для ручного запуска
+
+# Отдельная группа, чтобы не мешать записи с Kick
+concurrency:
+  group: youtube-xikkasgrandma-recorder
+  cancel-in-progress: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Установка Streamlink, FFmpeg и Rclone
+        run: |
+          python3 -m pip install --upgrade streamlink
+          sudo apt-get update -qq && sudo apt-get install -y -qq rclone ffmpeg
+
+      - name: Настройка Rclone
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          rclone listremotes
+
+      - name: Проверка эфира и запись (480p)
+        run: |
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          FILENAME="yt_Xikkasgrandma_${TIMESTAMP}.ts"
+          echo "FILENAME=$FILENAME" >> $GITHUB_ENV
+
+          # Запись максимум 5 часов 20 минут (19200 сек), чтобы осталось время на загрузку
+          timeout 19200 streamlink \
+            --output "$FILENAME" \
+            --hls-live-restart \
+            --retry-streams 5 \
+            --retry-max 3 \
+            "https://www.youtube.com/@Xikkasgrandma/live" "480p,480p30,480p60,worst" || true
+
+      - name: Загрузка на Google Диск
+        if: always()
+        run: |
+          if [ -f "$FILENAME" ] && [ $(stat -c%s "$FILENAME") -gt 1048576 ]; then
+            echo "Загружаю $FILENAME на Google Диск..."
+            rclone copy "$FILENAME" gdrive:YouTubeRecordings --drive-chunk-size=64M -v
+            echo "Загрузка завершена!"
+          else
+            echo "Стрим оффлайн или файл меньше 1 МБ — загружать нечего."
+          fi
